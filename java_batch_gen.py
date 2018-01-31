@@ -21,7 +21,7 @@ exclusion_list = [
 def get_artman_api_yaml(googleapis_repo):
   artman_yaml_files = []
   for root, dir_names, file_names in os.walk(
-          os.path.join(googleapis_repo, 'google')):
+      os.path.join(googleapis_repo, 'google')):
     for fname in fnmatch.filter(file_names, 'artman_*.yaml'):
       artman_yaml_files.append(os.path.join(root, fname))
   return artman_yaml_files
@@ -37,8 +37,7 @@ def filter_exclusion_list(artman_yaml_files, exclusion_list):
 def api_to_yaml_mapping(artman_yaml_files):
   mappings = dict(
       zip([
-          os.path.basename(yaml_file)[7:-5]
-          for yaml_file in artman_yaml_files
+          os.path.basename(yaml_file)[7:-5] for yaml_file in artman_yaml_files
       ], artman_yaml_files))
   return mappings
 
@@ -58,8 +57,7 @@ def run_batch(artman_yaml_file,
               g3artman_mode,
               dry_run=False):
   task_type = get_task_type(artman_yaml_file)
-  artman_yaml_file = _get_config_path_relative_to_googleapis(
-      artman_yaml_file)
+  artman_yaml_file = _get_config_path_relative_to_googleapis(artman_yaml_file)
   if task_type == 'JAVA_GAPIC':
     return _run_java_gapic(artman_yaml_file, root_dir, staging_repo,
                            docker_mode, g3artman_mode, dry_run)
@@ -121,7 +119,7 @@ def _run_java_grpc(artman_yaml_file, root_dir, local_staging_repo, docker_mode,
 def _parse_args(*args):
   parser = argparse.ArgumentParser()
   parser.add_argument(
-      '--root_dir',
+      '--root-dir',
       type=str,
       default='',
       help=
@@ -129,7 +127,7 @@ def _parse_args(*args):
   )
 
   parser.add_argument(
-      '--staging_repo',
+      '--local-repo-dir',
       type=str,
       default='../api-client-staging',
       help=
@@ -137,24 +135,31 @@ def _parse_args(*args):
   )
 
   parser.add_argument(
-      '--api_list',
+      '--api-list',
       type=str,
       default='',
       help=
       'A list of comma-separated API names that batch script will generate. Default to run all APIs'
   )
 
+  parser.add_argument(
+      '--exclude',
+      type=str,
+      default='',
+      help='A list of comma-separated API names that batch script will exclude.'
+  )
+
   parser.add_argument('--user-config', default='~/.artman/config.yaml')
 
   parser.add_mutually_exclusive_group(required=False)
   parser.add_argument(
-      '--docker_mode',
+      '--docker-mode',
       dest='docker_mode',
       action='store_true',
       help='Run artman in docker mode. This is default behavior.')
 
   parser.add_argument(
-      '--local_mode',
+      '--local-mode',
       dest='docker_mode',
       action='store_false',
       help='Run artman in local mode.')
@@ -168,7 +173,7 @@ def _parse_args(*args):
   parser.set_defaults(g3artman=False)
 
   parser.add_argument(
-      '--dryrun',
+      '--dry-run',
       dest='dryrun_mode',
       action='store_true',
       help=
@@ -185,12 +190,11 @@ def _parse_args(*args):
     if 'googleapis' in user_config['local_paths']:
       flags.root_dir = user_config['local_paths']['googleapis']
     elif 'reporoot' in user_config['local_paths']:
-      flags.root_dir = os.path.join(
-          user_config['local_paths']['reporoot'], 'googleapis')
+      flags.root_dir = os.path.join(user_config['local_paths']['reporoot'],
+                                    'googleapis')
     else:
-      print(
-          'JAVA_BATCH: fatal error: `--root_dir` or '
-          '`googleapis` field in artman user config must be specified.')
+      print('JAVA_BATCH: fatal error: `--root_dir` or '
+            '`googleapis` field in artman user config must be specified.')
       sys.exit(1)
 
   flags.root_dir = os.path.expanduser(flags.root_dir)
@@ -208,6 +212,12 @@ def main(*args):
   artman_yamls = filter_exclusion_list(
       get_artman_api_yaml(flags.root_dir), exclusion_list)
 
+  if flags.exclude:
+    exclusion_apis = [
+        "artman_%s.yaml" % api for api in flags.exclude.split(',')
+    ]
+    artman_yamls = filter_exclusion_list(artman_yamls, exclusion_apis)
+
   if flags.api_list:
     mappings = api_to_yaml_mapping(artman_yamls)
     artman_yamls = []
@@ -215,7 +225,7 @@ def main(*args):
       artman_yamls.append(mappings[api])
 
   for artman_yaml in artman_yamls:
-    run_batch(artman_yaml, flags.root_dir, flags.staging_repo,
+    run_batch(artman_yaml, flags.root_dir, flags.local_repo_dir,
               flags.docker_mode, flags.g3artman_mode, flags.dryrun_mode)
 
 
