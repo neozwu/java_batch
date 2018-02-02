@@ -1,24 +1,30 @@
 import os
 import sys
 import glob
+import json
 import fnmatch
 import argparse
 import subprocess
 from artman import cli
-
-exclusion_list = [
-    'artman_streetview_publish.yaml',
-    'artman_clouddebugger.yaml',
-    'artman_cloudbuild.yaml',
-    'artman_remoteworkers.yaml',
-    'artman_containeranalysis',
-    'artman_cloudresourcemanager.yaml',
-    'artman_cloudiot.yaml',
-    'artman_functions.yaml',
-]
+from artman.config.proto.config_pb2 import Artifact, Config
+from google.protobuf import json_format
+import yaml
+import shutil
 
 
-def get_artman_api_yaml(googleapis_repo):
+APIS = [
+# shared package
+        'core', 'appengine', 'iam', 
+# gapic
+        'bigquerydatatransfer', 'bigtable', 'bigtableadmin', 'container', 'dataproc_v1', 'datastore', 'dialogflow_v2beta1_java',
+'dlp_v2beta1', 'errorreporting', 'firestore', 'language_v1', 'language_v1beta2', 'logging', 'longrunning', 'monitoring', 'pubsub', 'oslogin_v1', 'spanner', 'spanner_admin_database', 'spanner_admin_instance',
+'speech_v1', 'speech_v1beta1', 'cloudtrace_v1', 'cloudtrace_v2', 'videointelligence_v1beta1', 'videointelligence_v1beta2', 'videointelligence_v1', 'vision_v1', 'vision_v1p1beta1']
+
+PROTO_EXCLUSION = ['longrunning']
+GRPC_EXCLUSION = ['appengine', 'longrunning']
+
+
+def get_artman_yaml(googleapis_repo):
   artman_yaml_files = []
   for root, dir_names, file_names in os.walk(
       os.path.join(googleapis_repo, 'google')):
@@ -50,30 +56,30 @@ def get_task_type(artman_yaml_file):
     return 'JAVA_GRPC'
 
 
-def run_batch(artman_yaml_file,
+def run_batch(api, artman_yaml,
               root_dir,
               staging_repo,
               docker_mode,
               g3artman_mode,
               dry_run=False):
-  task_type = get_task_type(artman_yaml_file)
-  artman_yaml_file = _get_config_path_relative_to_googleapis(artman_yaml_file)
+  task_type = get_task_type(artman_yaml)
+  artman_yaml = _get_config_path_relative_to_googleapis(artman_yaml)
   if task_type == 'JAVA_GAPIC':
-    return _run_java_gapic(artman_yaml_file, root_dir, staging_repo,
+    return _run_java_gapic(api, artman_yaml, root_dir, staging_repo,
                            docker_mode, g3artman_mode, dry_run)
   elif task_type == 'JAVA_GRPC':
-    return _run_java_grpc(artman_yaml_file, root_dir, staging_repo,
+    return _run_java_grpc(api, artman_yaml, root_dir, staging_repo,
                           docker_mode, g3artman_mode, dry_run)
   else:
     return False
 
 
-def _run_java_gapic(artman_yaml_file, root_dir, local_staging_repo,
+def _run_java_gapic(api, artman_yaml, root_dir, local_staging_repo,
                     docker_mode, g3artman_mode, dry_run):
   cmd = ('%s %s --config %s --root-dir %s publish --local-repo-dir %s '
          '--dry-run --target staging java_gapic') % (
              'artman' if not g3artman_mode else 'g3artman', '--local'
-             if not docker_mode else '', artman_yaml_file, root_dir,
+             if not docker_mode else '', artman_yaml, root_dir,
              local_staging_repo)
   print('JAVA_BATCH:  running: %s' % cmd)
   if not dry_run:
@@ -84,35 +90,37 @@ def _run_java_gapic(artman_yaml_file, root_dir, local_staging_repo,
   return True
 
 
-def _run_java_grpc(artman_yaml_file, root_dir, local_staging_repo, docker_mode,
+def _run_java_grpc(api, artman_yaml, root_dir, local_staging_repo, docker_mode,
                    g3artman_mode, dry_run):
   java_proto_cmd = (
       '%s %s --config %s --root-dir %s publish --local-repo-dir %s '
       '--dry-run --target staging java_proto') % (
           'artman' if not g3artman_mode else 'g3artman', '--local'
-          if not docker_mode else '', artman_yaml_file, root_dir,
+          if not docker_mode else '', artman_yaml, root_dir,
           local_staging_repo)
 
   java_grpc_cmd = (
       'artman %s --config %s --root-dir %s publish --local-repo-dir %s '
       '--dry-run --target staging java_grpc') % ('--local'
                                                  if not docker_mode else '',
-                                                 artman_yaml_file, root_dir,
+                                                 artman_yaml, root_dir,
                                                  local_staging_repo)
 
-  print('JAVA_BATCH: running: %s' % java_proto_cmd)
-  if not dry_run:
-    try:
-      subprocess.check_output(java_proto_cmd, shell=True)
-    except subprocess.CalledProcessError:
-      return False
+  if api not in PROTO_EXCLUSION:
+    print('JAVA_BATCH: running: %s' % java_proto_cmd)
+    if not dry_run:
+      try:
+        subprocess.check_output(java_proto_cmd, shell=True)
+      except subprocess.CalledProcessError:
+        return False
 
-  print('JAVA_BATCH: running: %s' % java_grpc_cmd)
-  if not dry_run:
-    try:
-      subprocess.check_output(java_grpc_cmd, shell=True)
-    except subprocess.CalledProcessError:
-      return False
+  if api not in GRPC_EXCLUSION:
+    print('JAVA_BATCH: running: %s' % java_grpc_cmd)
+    if not dry_run:
+      try:
+        subprocess.check_output(java_grpc_cmd, shell=True)
+      except subprocess.CalledProcessError:
+        return False
   return True
 
 
@@ -204,30 +212,63 @@ def _parse_args(*args):
 def _get_config_path_relative_to_googleapis(path):
   return path[path.find('googleapis/') + 11:]
 
+def remove_proto_exclusion(flags, mapping):
+  for api in PROTO_EXCLUSION:
+    artman_yaml = mapping[api]
+    proto_dir = _get_staging_dir(artman_yaml, 'java_gapic', 'proto')
+    if proto_dir:
+      print("JAVA_BATCH: deleting: " + proto_dir)
+      shutil.rmtree(proto_dir)
+
+def remove_grpc_exclusion(flags, mapping):
+  for api in GRPC_EXCLUSION:
+    artman_yaml = mapping[api]
+    grpc_dir = _get_staging_dir(artman_yaml, 'java_gapic', 'grpc')
+    if grpc_dir:
+      print("JAVA_BATCH: deleting: " + grpc_dir)
+      shutil.rmtree(grpc_dir)
+
+def _get_staging_dir(artman_yaml, artifact_name, dir_mapping_name):
+  artman_config = _get_artman_config(artman_yaml)
+  for artifact in artman_config.artifacts:
+    if artifact.name == artifact_name:
+      for publish_target in artifact.publish_targets:
+        if publish_target.name == "staging":
+          for dir_mapping in publish_target.directory_mappings:
+            if dir_mapping.name == dir_mapping_name:
+              return dir_mapping.dest
+  return None
+
+def _get_artman_config(artman_yaml):
+  config_pb = Config()
+  with open(artman_yaml, 'r') as f:
+    artman_config_json_string = json.dumps(yaml.load(f))
+  json_format.Parse(artman_config_json_string, config_pb)
+  return config_pb
+
 
 def main(*args):
   if not args:
     args = sys.argv[1:]
   flags = _parse_args(*args)
-  artman_yamls = filter_exclusion_list(
-      get_artman_api_yaml(flags.root_dir), exclusion_list)
+  mapping = api_to_yaml_mapping(get_artman_yaml(flags.root_dir))
+  print(mapping)
 
   if flags.exclude:
-    exclusion_apis = [
-        "artman_%s.yaml" % api for api in flags.exclude.split(',')
-    ]
-    artman_yamls = filter_exclusion_list(artman_yamls, exclusion_apis)
+      for api in flags.exclude.split(','):
+          APIS.remove(api)
 
   if flags.api_list:
-    mappings = api_to_yaml_mapping(artman_yamls)
-    artman_yamls = []
     for api in flags.api_list.split(','):
-      artman_yamls.append(mappings[api])
-
-  for artman_yaml in artman_yamls:
-    run_batch(artman_yaml, flags.root_dir, flags.local_repo_dir,
+      run_batch(api, mapping[api], flags.root_dir, flags.local_repo_dir,
+              flags.docker_mode, flags.g3artman_mode, flags.dryrun_mode)
+  else:
+    for api in APIS:
+      run_batch(api, mapping[api], flags.root_dir, flags.local_repo_dir,
               flags.docker_mode, flags.g3artman_mode, flags.dryrun_mode)
 
+  remove_proto_exclusion(flags, mapping)
+  remove_grpc_exclusion(flags, mapping)
 
 if __name__ == '__main__':
   main()
