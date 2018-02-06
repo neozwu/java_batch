@@ -40,6 +40,7 @@ APIS = [
     'spanner_admin_instance',
     'speech_v1',
     'speech_v1beta1',
+    'speech_v1p1beta1',
     'cloudtrace_v1',
     'cloudtrace_v2',
     'videointelligence_v1beta1',
@@ -51,7 +52,7 @@ APIS = [
 
 PROTO_EXCLUSION = ['longrunning']
 GRPC_EXCLUSION = ['appengine', 'longrunning']
-COPY_EXCLUSION = ['dlp_v2beta2']
+COPY_EXCLUSION = ['speech_v1p1beta1', 'dlp_v2beta2', 'datastore', 'spanner_admin_database', 'spanner_admin_instance', 'spanner']
 
 def get_artman_yaml(googleapis_repo):
   artman_yaml_files = []
@@ -285,16 +286,46 @@ def _get_artman_config(artman_yaml):
   json_format.Parse(artman_config_json_string, config_pb)
   return config_pb
 
+def get_copy_mapping(api_list, mapping):
+  copy_dir_mapping = dict()
+  for api in api_list:
+    if api not in COPY_EXCLUSION:
+      src, dest = None, None
+      artman_config = _get_artman_config(mapping[api]) 
+      for artifact in artman_config.artifacts:
+        if artifact.name == "java_gapic":
+          for publish_target in artifact.publish_targets:
+            if publish_target.name == "java":
+              for dir_mapping in publish_target.directory_mappings:
+                dest = dir_mapping.dest
+            elif publish_target.name == "staging":
+              for dir_mapping in publish_target.directory_mappings:
+                if dir_mapping.name != 'proto' and dir_mapping.name != 'grpc':
+                  src = dir_mapping.dest
+          break
+      copy_dir_mapping[api] = (src, dest)
+  return copy_dir_mapping
+
+def copy_to_gcj(flags, copy_mapping):
+  for k,v in copy_mapping.items():
+    if v[0] and v[1]:
+      cmd = 'cp -r %s/src/ %s/src/' % (os.path.join(flags.local_repo_dir, v[0]), os.path.join(flags.gcj_repo_dir, v[1]))
+      print("JAVA_BATCH> %s" % cmd)
+      if not flags.dry_run:
+        try:
+          subprocess.check_output(cmd, shell=True)
+        except subprocess.CalledProcessError:
+          print("JAVA_BATCH> FAIL: %s" % cmd)
 
 def main(*args):
   if not args:
     args = sys.argv[1:]
   flags = _parse_args(*args)
   mapping = api_to_yaml_mapping(get_artman_yaml(flags.root_dir))
-  print(mapping)
 
   if flags.gcj_repo_dir:
-    pass
+    copy_mapping = get_copy_mapping(APIS, mapping)
+    copy_to_gcj(flags, copy_mapping)
   else:
     if flags.exclude:
       for api in flags.exclude.split(','):
