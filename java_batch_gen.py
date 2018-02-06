@@ -11,6 +11,7 @@ from google.protobuf import json_format
 import yaml
 import shutil
 
+#list of APIs that will be generated
 APIS = [
     # shared package
     'core',
@@ -311,7 +312,7 @@ def copy_to_gcj(flags, copy_mapping):
     if v[0] and v[1]:
       cmd = 'cp -r %s/src/ %s/src/' % (os.path.join(flags.local_repo_dir, v[0]), os.path.join(flags.gcj_repo_dir, v[1]))
       print("JAVA_BATCH> %s" % cmd)
-      if not flags.dry_run:
+      if not flags.dryrun_mode:
         try:
           subprocess.check_output(cmd, shell=True)
         except subprocess.CalledProcessError:
