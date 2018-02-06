@@ -10,6 +10,8 @@ from artman.config.proto.config_pb2 import Artifact, Config
 from google.protobuf import json_format
 import yaml
 import shutil
+from tempfile import mkstemp
+from os import fdopen, remove
 
 #list of APIs that will be generated
 APIS = [
@@ -255,8 +257,9 @@ def remove_proto_exclusion(flags, mapping):
     artman_yaml = mapping[api]
     proto_dir = _get_staging_dir(artman_yaml, 'java_gapic', 'proto')
     if proto_dir:
-      print('JAVA_BATCH> deleting: ' + proto_dir)
-      shutil.rmtree(proto_dir)
+      abs_path = os.path.join(flags.local_repo_dir, proto_dir)
+      print('JAVA_BATCH> deleting: ' + abs_path)
+      shutil.rmtree(abs_path)
 
 
 def remove_grpc_exclusion(flags, mapping):
@@ -264,8 +267,9 @@ def remove_grpc_exclusion(flags, mapping):
     artman_yaml = mapping[api]
     grpc_dir = _get_staging_dir(artman_yaml, 'java_gapic', 'grpc')
     if grpc_dir:
-      print('JAVA_BATCH> deleting: ' + grpc_dir)
-      shutil.rmtree(grpc_dir)
+      abs_path = os.path.join(flags.local_repo_dir, grpc_dir)
+      print('JAVA_BATCH> deleting: ' + abs_path)
+      shutil.rmtree(abs_path)
 
 
 def _get_staging_dir(artman_yaml, artifact_name, dir_mapping_name):
@@ -318,6 +322,37 @@ def copy_to_gcj(flags, copy_mapping):
         except subprocess.CalledProcessError:
           print("JAVA_BATCH> FAIL: %s" % cmd)
 
+
+def fix_commons_proto_dep(flags):
+  file_list = _get_all_build_gradle_files(flags)
+  PROTO_PATTERN = 'compile project(":proto-google-longrunning-v1")'
+  PROTO_REPLACE = 'compile project(":proto-google-common-protos")'
+  GRPC_PATTERN = 'testCompile project(":grpc-google-longrunning-v1")'
+  GRPC_REPLACE = 'testCompile project(":grpc-google-common-protos")'
+  for f in file_list:
+    _fix_line_in_file(f, PROTO_PATTERN, PROTO_REPLACE)
+    _fix_line_in_file(f, GRPC_PATTERN, GRPC_REPLACE)
+
+
+def _fix_line_in_file(file_path, pattern, replace):
+  fh, abs_path = mkstemp()
+  with fdopen(fh, 'w') as new_file:
+    with open(file_path) as old_file:
+      for line in old_file:
+        new_file.write(line.replace(pattern, replace))
+  remove(file_path)
+  shutil.move(abs_path, file_path)
+
+
+def _get_all_build_gradle_files(flags):
+  file_list = [] 
+  for root, dir_names, file_names in os.walk(
+      os.path.join(os.path.expanduser(flags.local_repo_dir), 'generated', 'java')):
+    for fname in fnmatch.filter(file_names, 'build.gradle'):
+      file_list.append(os.path.join(root, fname))
+  return file_list 
+
+
 def main(*args):
   if not args:
     args = sys.argv[1:]
@@ -341,8 +376,18 @@ def main(*args):
         run_batch(api, mapping[api], flags.root_dir, flags.local_repo_dir,
                   flags.docker_mode, flags.g3artman_mode, flags.dryrun_mode)
 
-    remove_proto_exclusion(flags, mapping)
-    remove_grpc_exclusion(flags, mapping)
+    
+    if not flags.dryrun_mode:
+      try:
+        remove_proto_exclusion(flags, mapping)
+      except:
+        pass
+      try:
+        remove_grpc_exclusion(flags, mapping)
+      except:
+        pass
+
+      fix_commons_proto_dep(flags)
 
 if __name__ == '__main__':
   main()
