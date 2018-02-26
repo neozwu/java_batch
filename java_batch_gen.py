@@ -1,11 +1,10 @@
 import os
 import sys
-import glob
 import json
 import fnmatch
 import argparse
 import subprocess
-from artman import cli
+from artman.config import loader
 from artman.config.proto.config_pb2 import Artifact, Config
 from google.protobuf import json_format
 import yaml
@@ -159,7 +158,9 @@ def _run_java_grpc(api, artman_yaml, root_dir, local_staging_repo, docker_mode,
 
 def _parse_args(*args):
   parser = argparse.ArgumentParser()
-  parser.add_argument(
+  subparsers = parser.add_subparsers(dest='subcommand')
+  generate_parser = subparsers.add_parser('generate')
+  generate_parser.add_argument(
       '--root-dir',
       type=str,
       default='',
@@ -167,21 +168,14 @@ def _parse_args(*args):
       'Googleapis repo directory. You need to either specify this argument or specify googleapis in artman user config yaml'
   )
 
-  parser.add_argument(
+  generate_parser.add_argument(
       '--local-repo-dir',
       type=str,
       default='../api-client-staging',
       help=
       'api-client-staging repo directory. Default to \'../api-client-staging\'')
 
-  parser.add_argument(
-      '--gcj-repo-dir',
-      type=str,
-      default='',
-      help=
-      'google-cloud-java repo directory. If this argument is set, batch script will run copy task only')
-
-  parser.add_argument(
+  generate_parser.add_argument(
       '--api-list',
       type=str,
       default='',
@@ -189,37 +183,37 @@ def _parse_args(*args):
       'A list of comma-separated API names that batch script will generate. Default to run all APIs'
   )
 
-  parser.add_argument(
+  generate_parser.add_argument(
       '--exclude',
       type=str,
       default='',
       help='A list of comma-separated API names that batch script will exclude.'
   )
 
-  parser.add_argument('--user-config', default='~/.artman/config.yaml')
+  generate_parser.add_argument('--user-config', default='~/.artman/config.yaml')
 
-  parser.add_mutually_exclusive_group(required=False)
-  parser.add_argument(
+  generate_parser.add_mutually_exclusive_group(required=False)
+  generate_parser.add_argument(
       '--docker-mode',
       dest='docker_mode',
       action='store_true',
       help='Run artman in docker mode. This is default behavior.')
 
-  parser.add_argument(
+  generate_parser.add_argument(
       '--local-mode',
       dest='docker_mode',
       action='store_false',
       help='Run artman in local mode.')
 
-  parser.add_argument(
+  generate_parser.add_argument(
       '--g3artman',
       dest='g3artman_mode',
       action='store_true',
       help='Not supported yet. Run g3artman instead of artman.')
 
-  parser.set_defaults(g3artman=False)
+  generate_parser.set_defaults(g3artman=False)
 
-  parser.add_argument(
+  generate_parser.add_argument(
       '--dry-run',
       dest='dryrun_mode',
       action='store_true',
@@ -227,24 +221,42 @@ def _parse_args(*args):
       'Dry run mode. Batch script prints out artman command without running them. Default to false.'
   )
 
-  parser.set_defaults(dryrun_mode=False)
+  generate_parser.set_defaults(dryrun_mode=False)
+
+  copy_parser = subparsers.add_parser('copy')
+
+  copy_parser.add_argument(
+      '--root-dir',
+      type=str,
+      default='',
+      help=
+      'Googleapis repo directory. You need to either specify this argument or specify googleapis in artman user config yaml'
+  )
+
+  copy_parser.add_argument(
+      '--local-repo-dir',
+      type=str,
+      default='../api-client-staging',
+      help=
+      'api-client-staging repo directory. Default to \'../api-client-staging\'')
+
+  copy_parser.add_argument(
+      '--gcj-repo-dir',
+      type=str,
+      default='',
+      help=
+      'google-cloud-java repo directory. If this argument is set, batch script will run copy task only')
+
+  copy_parser.add_argument(
+      '--dry-run',
+      dest='dryrun_mode',
+      action='store_true',
+      help=
+      'Dry run mode. Batch script prints out artman command without running them. Default to false.'
+  )
 
   flags = parser.parse_args(args)
 
-  user_config = cli.main.read_user_config(flags)
-
-  if not flags.root_dir:
-    if 'googleapis' in user_config['local_paths']:
-      flags.root_dir = user_config['local_paths']['googleapis']
-    elif 'reporoot' in user_config['local_paths']:
-      flags.root_dir = os.path.join(user_config['local_paths']['reporoot'],
-                                    'googleapis')
-    else:
-      print('JAVA_BATCH> fatal error: `--root_dir` or '
-            '`googleapis` field in artman user config must be specified.')
-      sys.exit(1)
-
-  flags.root_dir = os.path.expanduser(flags.root_dir)
   return flags
 
 
@@ -356,13 +368,17 @@ def _get_all_build_gradle_files(flags):
 def main(*args):
   if not args:
     args = sys.argv[1:]
+
   flags = _parse_args(*args)
+  if not flags.root_dir:
+    flags.root_dir = os.getcwd()
+  flags.root_dir = os.path.expanduser(flags.root_dir)
   mapping = api_to_yaml_mapping(get_artman_yaml(flags.root_dir))
 
-  if flags.gcj_repo_dir:
+  if flags.subcommand == 'copy':
     copy_mapping = get_copy_mapping(APIS, mapping)
     copy_to_gcj(flags, copy_mapping)
-  else:
+  else: 
     if flags.exclude:
       for api in flags.exclude.split(','):
         APIS.remove(api)
